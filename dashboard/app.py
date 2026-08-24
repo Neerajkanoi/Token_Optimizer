@@ -73,18 +73,36 @@ DB_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POS
 
 @st.cache_resource
 def get_engine():
-    engine = create_engine(DB_URL)
-    # Ensure users table exists
-    with engine.begin() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS dashboard_users (
-                id VARCHAR PRIMARY KEY,
-                email VARCHAR UNIQUE NOT NULL,
-                password_hash VARCHAR NOT NULL,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """))
-    return engine
+    import os
+import streamlit as st
+from sqlalchemy import create_engine
+
+@st.cache_resource
+def get_engine():
+    # 1. Load the URL
+    if "DATABASE_URL" in st.secrets:
+        db_url = st.secrets["DATABASE_URL"]
+    else:
+        db_url = os.getenv("DATABASE_URL", "postgresql://admin:admin_password@localhost:5432/gateway_db")
+
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+    # 2. Attempt connection and safely capture the exact error
+    try:
+        engine = create_engine(db_url, pool_pre_ping=True)
+        with engine.begin() as conn:
+            pass # Connection successful
+        return engine
+        
+    except Exception as e:
+        # Parse out the host to see where it's actually trying to connect
+        safe_target = db_url.split("@")[-1] if "@" in db_url else "localhost"
+        
+        st.error("🚨 **Database Connection Failed**")
+        st.info(f"**Attempting to connect to:** `{safe_target}`")
+        st.error(f"**Exact Error:** {str(e)}")
+        st.stop() # Halt the app so Streamlit doesn't throw the redacted error
 
 engine = get_engine()
 
