@@ -63,13 +63,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Database Connection
-POSTGRES_USER = os.getenv("POSTGRES_USER", "admin")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "admin_password")
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
-POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
-POSTGRES_DB = os.getenv("POSTGRES_DB", "gateway_db")
-DB_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+try:
+    DB_URL = st.secrets["DATABASE_URL"]
+except:
+    POSTGRES_USER = os.getenv("POSTGRES_USER", "admin")
+    POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "admin_password")
+    POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+    POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+    POSTGRES_DB = os.getenv("POSTGRES_DB", "gateway_db")
+    DB_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
 @st.cache_resource
 def get_engine():
