@@ -136,7 +136,12 @@ if menu == "🔌 Developer DX & Setup":
                         {"id": str(uuid.uuid4()), "api_key": new_api_key, "name": org_name, "budget": budget, "tier": tier.split(" ")[0].lower()}
                     )
                 st.success("API Key Generated Successfully!")
-                st.markdown(f"<div class='api-box'>{new_api_key}</div>", unsafe_allow_html=True)
+                st.text_input(
+                    "Your new API Key (Copy and save this securely!):",
+                    value=new_api_key,
+                    type="password",
+                    help="Click the eye icon to reveal, or simply select all and copy."
+                )
                 st.session_state["latest_api_key"] = new_api_key
     
     with col2:
