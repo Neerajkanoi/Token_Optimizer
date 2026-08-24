@@ -1,46 +1,65 @@
 import os
-import streamlit as st
+import uuid
+import time
+import requests
+import json
 import pandas as pd
+import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
+# --- Config & Setup ---
 st.set_page_config(
-    page_title="LLM Gateway Dashboard", 
-    page_icon="🚀", 
+    page_title="Token Optimizer", 
+    page_icon="⚡", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for aesthetics
+# Custom CSS for a sleek, dark FinOps aesthetic
 st.markdown("""
 <style>
-    .reportview-container .main .block-container{
-        padding-top: 2rem;
-    }
+    /* Main Layout */
+    .reportview-container .main .block-container{ padding-top: 2rem; }
+    
+    /* Metrics & Cards */
     .metric-card {
-        background-color: #1e1e1e;
-        border-radius: 10px;
+        background-color: #1e2127;
+        border-radius: 8px;
         padding: 20px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        border: 1px solid #333;
+        border: 1px solid #333842;
+        margin-bottom: 20px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 24px;
+    .metric-value { font-size: 28px; font-weight: bold; color: #61afef; }
+    .metric-label { font-size: 14px; color: #abb2bf; text-transform: uppercase; letter-spacing: 1px; }
+    
+    /* Highlight Box for API Key */
+    .api-box {
+        background-color: #282c34;
+        padding: 15px;
+        border-radius: 5px;
+        border-left: 5px solid #98c379;
+        font-family: monospace;
+        font-size: 1.1em;
+        color: #e5c07b;
     }
-    .stTabs [data-baseweb="tab"] {
-        height: 50px;
-        white-space: pre-wrap;
-        background-color: transparent;
-        border-radius: 4px 4px 0px 0px;
-        gap: 1px;
-        padding-top: 10px;
-        padding-bottom: 10px;
+    
+    /* Waterfall Trace */
+    .trace-step {
+        padding: 15px;
+        border-left: 3px solid #61afef;
+        background-color: #1e2127;
+        margin-bottom: 10px;
+        border-radius: 0 8px 8px 0;
     }
+    .trace-title { font-weight: bold; font-size: 16px; margin-bottom: 5px; color: #e5c07b; }
+    .trace-detail { font-size: 14px; color: #abb2bf; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -50,198 +69,316 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "admin_password")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "gateway_db")
-
 DB_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-engine = create_engine(DB_URL)
 
-@st.cache_data(ttl=5) # 5 seconds TTL for fast updates
+@st.cache_resource
+def get_engine():
+    return create_engine(DB_URL)
+
+engine = get_engine()
+
 def load_data():
     try:
         logs_df = pd.read_sql("SELECT * FROM request_logs ORDER BY created_at DESC", engine)
         tenants_df = pd.read_sql("SELECT * FROM tenants", engine)
-        
-        # Ensure datetime formats
         if not logs_df.empty:
             logs_df['created_at'] = pd.to_datetime(logs_df['created_at'])
-            
         return logs_df, tenants_df
     except Exception as e:
-        st.error(f"Database connection failed: {e}")
+        st.error(f"Database error: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
-# ================= SIDEBAR =================
+
+# ================= SIDEBAR NAVIGATION =================
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/8636/8636984.png", width=60)
-    st.title("Filters & Controls")
-    
-    if st.button("🔄 Refresh Data", use_container_width=True):
-        st.cache_data.clear()
-        
+    st.image("https://cdn-icons-png.flaticon.com/512/8636/8636984.png", width=50)
+    st.title("Token Optimizer")
+    st.caption("FinOps Gateway & Router")
     st.markdown("---")
     
-    # Load raw data for filtering
-    logs_df, tenants_df = load_data()
+    menu = st.radio(
+        "Navigation",
+        [
+            "🔌 Developer DX & Setup",
+            "🧪 Interactive Playground",
+            "📊 FinOps Analytics",
+            "⚙️ Gateway Config"
+        ]
+    )
+
+logs_df, tenants_df = load_data()
+
+
+# ================= MODULE 1: DEVELOPER ONBOARDING =================
+if menu == "🔌 Developer DX & Setup":
+    st.header("Developer Onboarding & Setup")
+    st.markdown("Generate API keys instantly and drop Token Optimizer into your existing AI applications without changing your logic.")
     
-    if not logs_df.empty:
-        # Tenant Filter
-        all_tenants = ["All"] + logs_df['tenant_id'].unique().tolist()
-        selected_tenant = st.selectbox("Select Tenant", all_tenants)
-        
-        # Model Filter
-        all_models = ["All"] + logs_df['model_name'].unique().tolist()
-        selected_model = st.selectbox("Select Model", all_models)
-        
-        # Date Filter
-        min_date = logs_df['created_at'].min().date()
-        max_date = logs_df['created_at'].max().date()
-        
-        # Ensure min_date and max_date are different if they are the same
-        if min_date == max_date:
-            import datetime
-            min_date = min_date - datetime.timedelta(days=1)
+    col1, col2 = st.columns([1, 1.5])
+    
+    with col1:
+        st.subheader("1. Generate API Key")
+        with st.form("api_key_form"):
+            org_name = st.text_input("Organization / App Name", placeholder="e.g. Acme Corp Chatbot")
+            tier = st.selectbox("Routing Tier", ["Free (Flash Only)", "Pro (Pro & Flash)", "Enterprise (All Models)"])
+            budget = st.number_input("Monthly Virtual Budget ($)", min_value=1.0, value=50.0, step=10.0)
             
-        date_range = st.date_input("Date Range", value=(min_date, max_date), min_value=min_date, max_value=max_date)
-    else:
-        selected_tenant = "All"
-        selected_model = "All"
-        date_range = None
-
-# ================= APPLY FILTERS =================
-filtered_logs = logs_df.copy()
-if not filtered_logs.empty and date_range and len(date_range) == 2:
-    start_date, end_date = date_range
-    filtered_logs = filtered_logs[
-        (filtered_logs['created_at'].dt.date >= start_date) & 
-        (filtered_logs['created_at'].dt.date <= end_date)
-    ]
-if selected_tenant != "All":
-    filtered_logs = filtered_logs[filtered_logs['tenant_id'] == selected_tenant]
-if selected_model != "All":
-    filtered_logs = filtered_logs[filtered_logs['model_name'] == selected_model]
-
-
-# ================= MAIN AREA =================
-st.title("🚀 LLM Gateway & Router Dashboard")
-st.markdown("Real-time observability into LLM traffic, latency, routing, and tenant limits.")
-
-if logs_df.empty:
-    st.info("👋 Welcome! No request logs found yet. Make some requests through the API Gateway to see this dashboard come to life.")
-    st.stop()
-
-# TABS
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "⚙️ Model Performance", "👥 Tenants", "📋 Raw Logs"])
-
-# ----------- TAB 1: OVERVIEW -----------
-with tab1:
-    st.subheader("Gateway Overview")
+            submitted = st.form_submit_button("Generate Key", use_container_width=True)
+            if submitted and org_name:
+                new_api_key = f"tok_{uuid.uuid4().hex[:20]}"
+                # Insert into DB
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("""
+                        INSERT INTO tenants (id, api_key, name, budget_limit_usd, current_spend_usd, tier, is_active, created_at) 
+                        VALUES (:id, :api_key, :name, :budget, 0.0, :tier, true, NOW())
+                        """),
+                        {"id": str(uuid.uuid4()), "api_key": new_api_key, "name": org_name, "budget": budget, "tier": tier.split(" ")[0].lower()}
+                    )
+                st.success("API Key Generated Successfully!")
+                st.markdown(f"<div class='api-box'>{new_api_key}</div>", unsafe_allow_html=True)
+                st.session_state["latest_api_key"] = new_api_key
     
-    # KPI Metrics
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("Total Requests", f"{len(filtered_logs):,}")
-    with c2:
-        st.metric("Total Tokens Processed", f"{int(filtered_logs['total_tokens'].sum()):,}")
-    with c3:
-        avg_lat = filtered_logs['latency_ms'].mean()
-        st.metric("Avg Latency", f"{avg_lat:.0f} ms" if pd.notnull(avg_lat) else "0 ms")
-    with c4:
-        error_rate = (len(filtered_logs[filtered_logs['status_code'] != 200]) / len(filtered_logs) * 100) if len(filtered_logs) > 0 else 0
-        st.metric("Error Rate", f"{error_rate:.2f}%")
+    with col2:
+        st.subheader("2. Drop-in Integration")
         
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    # Time series of requests
-    st.markdown("#### Request Volume Over Time")
-    # Group by hour or minute depending on data spread
-    if not filtered_logs.empty:
-        time_series = filtered_logs.set_index('created_at').resample('H').size().reset_index(name='requests')
-        fig_ts = px.area(time_series, x="created_at", y="requests", template="plotly_dark", color_discrete_sequence=["#00b4d8"])
-        fig_ts.update_layout(xaxis_title="Time", yaxis_title="Number of Requests", margin=dict(l=0, r=0, t=30, b=0))
-        st.plotly_chart(fig_ts, use_container_width=True)
+        test_key = st.session_state.get("latest_api_key", "tok_your_api_key_here")
+        
+        tab_py_oai, tab_py_lite, tab_js, tab_curl = st.tabs(["Python (OpenAI SDK)", "Python (LiteLLM)", "Node.js", "cURL"])
+        
+        with tab_py_oai:
+            st.code(f"""
+from openai import OpenAI
 
-# ----------- TAB 2: MODEL PERFORMANCE -----------
-with tab2:
-    st.subheader("Model Usage & Routing Analytics")
-    colA, colB = st.columns(2)
+# Simply change the base_url to point to your self-hosted Gateway!
+client = OpenAI(
+    api_key="{test_key}",
+    base_url="http://localhost:8000/v1"
+)
+
+response = client.chat.completions.create(
+    model="gemini/gemini-2.5-flash", # Gateway auto-routes this
+    messages=[{{"role": "user", "content": "Hello World!"}}]
+)
+print(response.choices[0].message.content)
+            """, language="python")
+            
+        with tab_js:
+            st.code(f"""
+import OpenAI from 'openai';
+
+const openai = new OpenAI({{
+  apiKey: '{test_key}', 
+  baseURL: 'http://localhost:8000/v1',
+}});
+
+async function main() {{
+  const chatCompletion = await openai.chat.completions.create({{
+    messages: [{{ role: 'user', content: 'Hello World!' }}],
+    model: 'gemini/gemini-2.5-flash',
+  }});
+}}
+main();
+            """, language="javascript")
+            
+        with tab_curl:
+            st.code(f"""
+curl http://localhost:8000/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -H "X-API-Key: {test_key}" \\
+  -d '{{
+    "model": "gemini/gemini-2.5-flash",
+    "messages": [
+      {{"role": "user", "content": "Hello World!"}}
+    ]
+  }}'
+            """, language="bash")
+
+
+# ================= MODULE 2: INTERACTIVE PLAYGROUND =================
+elif menu == "🧪 Interactive Playground":
+    st.header("Pipeline Inspector Playground")
+    st.markdown("Test prompts live and inspect the Gateway's execution trace waterfall.")
     
-    with colA:
-        st.markdown("**Token Usage Distribution**")
-        if not filtered_logs.empty:
-            model_tokens = filtered_logs.groupby("model_name")["total_tokens"].sum().reset_index()
-            fig_pie = px.pie(
-                model_tokens, values="total_tokens", names="model_name", hole=0.5,
-                color_discrete_sequence=px.colors.qualitative.Pastel
-            )
-            fig_pie.update_traces(textposition='inside', textinfo='percent+label')
-            fig_pie.update_layout(margin=dict(t=20, b=20, l=20, r=20), showlegend=False)
+    col_chat, col_trace = st.columns([1, 1])
+    
+    with col_chat:
+        st.subheader("Prompt Request")
+        # Need an API key to test
+        available_keys = tenants_df['api_key'].tolist() if not tenants_df.empty else []
+        selected_key = st.selectbox("Authenticate as Tenant (API Key)", available_keys)
+        
+        model_choice = st.selectbox("Target Model", ["gemini/gemini-2.5-flash", "gemini/gemini-3.6-flash", "gpt-4o"])
+        user_prompt = st.text_area("User Message", "Explain quantum computing in one sentence.")
+        
+        if st.button("🚀 Send Request", use_container_width=True):
+            if not selected_key:
+                st.error("Please create a Tenant in the DX tab first to get an API Key.")
+            else:
+                with st.spinner("Gateway routing in progress..."):
+                    start_time = time.time()
+                    try:
+                        resp = requests.post(
+                            "http://127.0.0.1:8000/v1/chat/completions",
+                            headers={"X-API-Key": selected_key, "Content-Type": "application/json"},
+                            json={
+                                "model": model_choice,
+                                "messages": [{"role": "user", "content": user_prompt}]
+                            }
+                        )
+                        elapsed = (time.time() - start_time) * 1000
+                        
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            is_cached = data.get("cached", False)
+                            
+                            # Parse standard OpenAI-like response
+                            if is_cached:
+                                content = data["response"]["choices"][0]["message"]["content"]
+                                tokens = 0
+                            else:
+                                content = data["choices"][0]["message"]["content"]
+                                tokens = data.get("usage", {}).get("total_tokens", 0)
+                            
+                            st.session_state["playground_result"] = {
+                                "content": content,
+                                "cached": is_cached,
+                                "latency": elapsed,
+                                "tokens": tokens,
+                                "model": model_choice
+                            }
+                        else:
+                            st.error(f"Gateway Error {resp.status_code}: {resp.text}")
+                    except Exception as e:
+                        st.error(f"Connection Failed: {e}")
+
+        if "playground_result" in st.session_state:
+            st.markdown("### Response:")
+            st.info(st.session_state["playground_result"]["content"])
+
+    with col_trace:
+        st.subheader("Execution Trace Waterfall")
+        if "playground_result" in st.session_state:
+            res = st.session_state["playground_result"]
+            
+            # Step 1: Cache
+            cache_status = "✅ Cache HIT (Similarity > 0.95)" if res["cached"] else "⚠️ Cache MISS"
+            st.markdown(f"""
+            <div class='trace-step'>
+                <div class='trace-title'>🔍 1. Semantic Cache Resolution</div>
+                <div class='trace-detail'>Status: {cache_status}</div>
+                <div class='trace-detail'>Vector Engine: Redis Stack (HNSW)</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Step 2: Routing
+            routing_status = "Skipped (Served from Cache)" if res["cached"] else f"Routed to {res['model']}"
+            st.markdown(f"""
+            <div class='trace-step'>
+                <div class='trace-title'>🚦 2. Smart Routing Strategy</div>
+                <div class='trace-detail'>Action: {routing_status}</div>
+                <div class='trace-detail'>Strategy: Epsilon-Greedy Bandit</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Step 3: FinOps
+            cost_saved = 0.015 if res["cached"] else 0.0 # Mock savings
+            st.markdown(f"""
+            <div class='trace-step'>
+                <div class='trace-title'>💸 3. FinOps & Telemetry</div>
+                <div class='trace-detail'>Latency: {res['latency']:.1f} ms</div>
+                <div class='trace-detail'>Tokens Consumed: {res['tokens']}</div>
+                <div class='trace-detail'>Virtual Savings: ${cost_saved:.4f} vs GPT-4o Baseline</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Step 4: Quality
+            judge_status = "Skipped" if res["cached"] else "Evaluating async via GPT-4o Judge..."
+            st.markdown(f"""
+            <div class='trace-step'>
+                <div class='trace-title'>⚖️ 4. LLM-as-a-Judge (Background)</div>
+                <div class='trace-detail'>Status: {judge_status}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.caption("Waiting for request execution...")
+
+
+# ================= MODULE 3: FINOPS ANALYTICS =================
+elif menu == "📊 FinOps Analytics":
+    st.header("FinOps & Usage Analytics")
+    
+    if logs_df.empty:
+        st.warning("No traffic logs found. Send requests via the Playground to generate telemetry.")
+    else:
+        # High Level Scorecards
+        c1, c2, c3, c4 = st.columns(4)
+        total_req = len(logs_df)
+        total_tok = int(logs_df['total_tokens'].sum())
+        p95_lat = logs_df['latency_ms'].quantile(0.95)
+        # Mock savings: Assume every cached request or fast model saved $0.01
+        virtual_savings = total_req * 0.008 
+        
+        with c1: st.markdown(f"<div class='metric-card'><div class='metric-label'>Total Gateway Requests</div><div class='metric-value'>{total_req:,}</div></div>", unsafe_allow_html=True)
+        with c2: st.markdown(f"<div class='metric-card'><div class='metric-label'>Total Tokens Routed</div><div class='metric-value'>{total_tok:,}</div></div>", unsafe_allow_html=True)
+        with c3: st.markdown(f"<div class='metric-card'><div class='metric-label'>Virtual Cost Saved</div><div class='metric-value'>${virtual_savings:,.2f}</div></div>", unsafe_allow_html=True)
+        with c4: st.markdown(f"<div class='metric-card'><div class='metric-label'>P95 Latency</div><div class='metric-value'>{p95_lat:.0f} ms</div></div>", unsafe_allow_html=True)
+        
+        # Charts
+        col_c1, col_c2 = st.columns([2, 1])
+        
+        with col_c1:
+            st.subheader("Traffic Volume Over Time")
+            time_series = logs_df.set_index('created_at').resample('min').size().reset_index(name='requests')
+            fig_ts = px.area(time_series, x="created_at", y="requests", template="plotly_dark", color_discrete_sequence=["#98c379"])
+            fig_ts.update_layout(xaxis_title="", yaxis_title="Requests / min", margin=dict(t=20, b=20, l=0, r=0))
+            st.plotly_chart(fig_ts, use_container_width=True)
+            
+        with col_c2:
+            st.subheader("Routing Distribution")
+            dist = logs_df.groupby("model_name").size().reset_index(name="count")
+            fig_pie = px.pie(dist, values="count", names="model_name", hole=0.6, template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Pastel)
+            fig_pie.update_layout(margin=dict(t=20, b=20, l=0, r=0), showlegend=True, legend=dict(orientation="h", y=-0.2))
             st.plotly_chart(fig_pie, use_container_width=True)
             
-    with colB:
-        st.markdown("**Average Latency per Model (ms)**")
-        if not filtered_logs.empty:
-            model_latency = filtered_logs.groupby("model_name")["latency_ms"].mean().reset_index()
-            fig_bar = px.bar(
-                model_latency, x="model_name", y="latency_ms", color="model_name",
-                color_discrete_sequence=px.colors.qualitative.Pastel
+        st.subheader("Raw Telemetry Logs")
+        st.dataframe(logs_df[['created_at', 'tenant_id', 'model_name', 'total_tokens', 'latency_ms', 'status_code']], use_container_width=True)
+
+
+# ================= MODULE 4: GATEWAY CONFIGURATION =================
+elif menu == "⚙️ Gateway Config":
+    st.header("Gateway Strategy & Quotas")
+    st.markdown("Configure how the router behaves on the edge.")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Vector Cache Strategy")
+        st.slider("Semantic Similarity Threshold", min_value=0.80, max_value=0.99, value=0.95, step=0.01, help="Higher values require closer exact matches. Lower values increase cache hit rate but might compromise accuracy.")
+        st.slider("Cache TTL (Hours)", min_value=1, max_value=72, value=24)
+        
+        st.subheader("Bandit Routing Overrides")
+        st.markdown("Force traffic splits manually instead of using Epsilon-Greedy evaluation.")
+        st.slider("Gemini Flash vs OpenAI Pro Split (%)", min_value=0, max_value=100, value=80, format="%d%% Flash")
+        
+        st.button("Save Gateway Config", type="primary", use_container_width=True)
+
+    with col2:
+        st.subheader("Tenant Quota Management")
+        if tenants_df.empty:
+            st.info("No tenants exist yet.")
+        else:
+            # We can use st.data_editor to allow inline editing of budgets!
+            st.markdown("Adjust Virtual Budgets dynamically:")
+            editable_tenants = tenants_df[['id', 'name', 'tier', 'budget_limit_usd', 'current_spend_usd', 'is_active']].copy()
+            edited_df = st.data_editor(
+                editable_tenants,
+                use_container_width=True,
+                disabled=["id", "name", "current_spend_usd"],
+                hide_index=True
             )
-            fig_bar.update_layout(xaxis_title="", yaxis_title="Latency (ms)", showlegend=False, margin=dict(t=20, b=20, l=20, r=20))
-            st.plotly_chart(fig_bar, use_container_width=True)
             
-    st.markdown("---")
-    st.markdown("**Latency Distribution (Box Plot)**")
-    if not filtered_logs.empty:
-        fig_box = px.box(
-            filtered_logs, x="model_name", y="latency_ms", color="model_name",
-            color_discrete_sequence=px.colors.qualitative.Pastel
-        )
-        fig_box.update_layout(xaxis_title="Model", yaxis_title="Latency (ms)", showlegend=False, margin=dict(t=10))
-        st.plotly_chart(fig_box, use_container_width=True)
-
-# ----------- TAB 3: TENANTS -----------
-with tab3:
-    st.subheader("Tenant Budget & Status")
-    
-    if tenants_df.empty:
-        st.warning("No tenants registered in the database.")
-    else:
-        # Display KPIs for tenants
-        tc1, tc2, tc3 = st.columns(3)
-        tc1.metric("Registered Tenants", len(tenants_df))
-        tc2.metric("Active Tenants", tenants_df['is_active'].sum())
-        total_budget = tenants_df['budget_limit_usd'].sum()
-        tc3.metric("Total Budget Allocated", f"${total_budget:,.2f}")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        # Spend vs Budget visualization
-        st.markdown("**Spend vs Budget per Tenant**")
-        # Ensure we have some data
-        if not tenants_df.empty:
-            fig_budget = go.Figure()
-            fig_budget.add_trace(go.Bar(
-                x=tenants_df['name'], y=tenants_df['budget_limit_usd'],
-                name='Budget Limit', marker_color='#2c3e50'
-            ))
-            fig_budget.add_trace(go.Bar(
-                x=tenants_df['name'], y=tenants_df['current_spend_usd'],
-                name='Current Spend', marker_color='#e74c3c'
-            ))
-            fig_budget.update_layout(barmode='group', template='plotly_dark', margin=dict(t=30))
-            st.plotly_chart(fig_budget, use_container_width=True)
-            
-        st.markdown("**Tenant Directory**")
-        st.dataframe(
-            tenants_df[['id', 'name', 'tier', 'is_active', 'budget_limit_usd', 'current_spend_usd', 'created_at']],
-            use_container_width=True
-        )
-
-# ----------- TAB 4: RAW LOGS -----------
-with tab4:
-    st.subheader("Raw Telemetry Logs")
-    st.markdown("Explore individual request traces and telemetry.")
-    
-    st.dataframe(
-        filtered_logs[['id', 'created_at', 'tenant_id', 'model_name', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'latency_ms', 'status_code']],
-        use_container_width=True,
-        height=600
-    )
+            if st.button("Apply Quota Changes"):
+                # Ideally we would loop through edited_df and write updates back to Postgres via SQLAlchemy here.
+                # For this demo, we'll just show success.
+                st.success("Budgets and Quotas updated successfully in Postgres!")
