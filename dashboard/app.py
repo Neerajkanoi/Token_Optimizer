@@ -3,6 +3,7 @@ import uuid
 import time
 import requests
 import json
+import bcrypt
 import pandas as pd
 import streamlit as st
 import plotly.express as px
@@ -39,17 +40,6 @@ st.markdown("""
     .metric-value { font-size: 28px; font-weight: bold; color: #61afef; }
     .metric-label { font-size: 14px; color: #abb2bf; text-transform: uppercase; letter-spacing: 1px; }
     
-    /* Highlight Box for API Key */
-    .api-box {
-        background-color: #282c34;
-        padding: 15px;
-        border-radius: 5px;
-        border-left: 5px solid #98c379;
-        font-family: monospace;
-        font-size: 1.1em;
-        color: #e5c07b;
-    }
-    
     /* Waterfall Trace */
     .trace-step {
         padding: 15px;
@@ -60,6 +50,16 @@ st.markdown("""
     }
     .trace-title { font-weight: bold; font-size: 16px; margin-bottom: 5px; color: #e5c07b; }
     .trace-detail { font-size: 14px; color: #abb2bf; }
+    
+    /* Centered Login Box */
+    .login-box {
+        max-width: 400px;
+        margin: 0 auto;
+        padding: 30px;
+        background-color: #1e2127;
+        border-radius: 8px;
+        border: 1px solid #333842;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -73,10 +73,97 @@ DB_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POS
 
 @st.cache_resource
 def get_engine():
-    return create_engine(DB_URL)
+    engine = create_engine(DB_URL)
+    # Ensure users table exists
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS dashboard_users (
+                id VARCHAR PRIMARY KEY,
+                email VARCHAR UNIQUE NOT NULL,
+                password_hash VARCHAR NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+    return engine
 
 engine = get_engine()
 
+
+# ================= AUTHENTICATION LOGIC =================
+def hash_password(password: str) -> str:
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+
+def verify_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+
+def create_user(email: str, password: str) -> bool:
+    hashed = hash_password(password)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO dashboard_users (id, email, password_hash) VALUES (:id, :email, :hashed)"),
+                {"id": str(uuid.uuid4()), "email": email, "hashed": hashed}
+            )
+        return True
+    except Exception as e:
+        return False
+
+def authenticate_user(email: str, password: str) -> bool:
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT password_hash FROM dashboard_users WHERE email = :email"),
+            {"email": email}
+        ).fetchone()
+        
+        if result and verify_password(password, result[0]):
+            return True
+    return False
+
+# Initialize Session State
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+    st.session_state["user_email"] = None
+
+# ================= LOGIN & SIGNUP SCREEN =================
+if not st.session_state["authenticated"]:
+    st.markdown("<h1 style='text-align: center; margin-bottom: 2rem;'>Token Optimizer</h1>", unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        st.markdown("<div class='login-box'>", unsafe_allow_html=True)
+        tab_login, tab_signup = st.tabs(["Login", "Sign Up"])
+        
+        with tab_login:
+            with st.form("login_form"):
+                log_email = st.text_input("Email", placeholder="admin@example.com")
+                log_pass = st.text_input("Password", type="password")
+                if st.form_submit_button("Secure Login", use_container_width=True):
+                    if authenticate_user(log_email, log_pass):
+                        st.session_state["authenticated"] = True
+                        st.session_state["user_email"] = log_email
+                        st.rerun()
+                    else:
+                        st.error("Invalid email or password.")
+                        
+        with tab_signup:
+            with st.form("signup_form"):
+                st.caption("Create a new admin account to access the dashboard.")
+                new_email = st.text_input("Email")
+                new_pass = st.text_input("Password", type="password")
+                if st.form_submit_button("Create Account", use_container_width=True):
+                    if len(new_pass) < 6:
+                        st.error("Password must be at least 6 characters.")
+                    elif create_user(new_email, new_pass):
+                        st.success("Account created successfully! You can now log in.")
+                    else:
+                        st.error("User with this email already exists.")
+                        
+        st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
+
+
+# ================= DATA LOADING =================
 def load_data():
     try:
         logs_df = pd.read_sql("SELECT * FROM request_logs ORDER BY created_at DESC", engine)
@@ -89,7 +176,9 @@ def load_data():
         return pd.DataFrame(), pd.DataFrame()
 
 
-# ================= SIDEBAR NAVIGATION =================
+# ================= PROTECTED DASHBOARD =================
+
+# Sidebar Navigation
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/8636/8636984.png", width=50)
     st.title("Token Optimizer")
@@ -105,6 +194,13 @@ with st.sidebar:
             "⚙️ Gateway Config"
         ]
     )
+    
+    st.markdown("---")
+    st.caption(f"Logged in as: {st.session_state['user_email']}")
+    if st.button("🚪 Log Out", use_container_width=True):
+        st.session_state["authenticated"] = False
+        st.session_state["user_email"] = None
+        st.rerun()
 
 logs_df, tenants_df = load_data()
 
