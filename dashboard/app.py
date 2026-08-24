@@ -125,6 +125,7 @@ def create_user(email: str, password: str) -> bool:
             )
         return True
     except Exception as e:
+        st.error(f"DB Error: {e}")
         return False
 
 def authenticate_user(email: str, password: str) -> bool:
